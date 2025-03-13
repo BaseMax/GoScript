@@ -114,50 +114,47 @@ var symbolMap = map[string]TokKind{
 
 func CreateScanner(src string) *scanner {
 	src = strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\r`, "\r").Replace(src)
-
 	rdr := bufio.NewReader(strings.NewReader(src))
 	s := &scanner{
 		rdr:     rdr,
-		lexemes: make(chan Lexeme),
+		lexemes: make(chan Lexeme, 256),
 	}
 	go s.scanTokens()
 	return s
 }
 
 func (s *scanner) scanTokens() {
-	r, _, err := s.rdr.ReadRune()
-	if err == io.EOF {
-		s.sendToken(END_OF_FILE, "")
-		close(s.lexemes)
-		return
+	for {
+		r, _, err := s.rdr.ReadRune()
+		if err == io.EOF {
+			s.sendToken(END_OF_FILE, "")
+			close(s.lexemes)
+			break
+		}
+		switch {
+		case r == '"':
+			s.scanString()
+		case unicode.IsDigit(r):
+			s.scanNumber(r)
+		case unicode.IsLetter(r):
+			s.scanIdentifier(r)
+		default:
+			s.scanSymbol(r)
+		}
 	}
-	switch {
-	case r == '"':
-		s.scanString()
-	case unicode.IsDigit(r):
-		s.scanNumber(r)
-	case unicode.IsLetter(r):
-		s.scanIdentifier(r)
-	default:
-		s.scanSymbol(r)
-	}
-	s.scanTokens()
 }
 
 func (s *scanner) scanMultiLineComment() {
 	for {
-		str, err := s.rdr.ReadString('*')
-		_ = str
+		_, err := s.rdr.ReadString('*')
 		if err != nil {
 			log.Fatal(err)
-			return
 		}
-		nextChar, _, err := s.rdr.ReadRune()
+		nextRune, _, err := s.rdr.ReadRune()
 		if err != nil {
 			log.Fatal(err)
-			return
 		}
-		if nextChar == '/' {
+		if nextRune == '/' {
 			break
 		}
 		s.rdr.UnreadRune()
@@ -165,34 +162,46 @@ func (s *scanner) scanMultiLineComment() {
 }
 
 func (s *scanner) sendToken(kind TokKind, txt string) {
-	token := Lexeme{Kind: kind, Text: txt}
-	s.lexemes <- token
+	s.lexemes <- Lexeme{Kind: kind, Text: txt}
 }
 
 func (s *scanner) scanString() {
-	accumulated, _ := s.rdr.ReadString('"')
-	str := accumulated
-	for strings.HasSuffix(str, "\\\"") {
-		str, _ = s.rdr.ReadString('"')
-		accumulated += str
+	var builder strings.Builder
+	for {
+		r, _, err := s.rdr.ReadRune()
+		if err == io.EOF {
+			break
+		}
+		if r == '"' {
+			current := builder.String()
+			if len(current) > 0 && current[len(current)-1] == '\\' {
+				builder.WriteRune(r)
+				continue
+			}
+			break
+		}
+		builder.WriteRune(r)
 	}
-	accumulated = strings.TrimRight(accumulated, `"`)
-	accumulated = strings.ReplaceAll(accumulated, "\\\"", "\"")
-	s.sendToken(STRING_T, accumulated)
+	result := strings.ReplaceAll(builder.String(), `\"`, `"`)
+	s.sendToken(STRING_T, result)
 }
 
-func (s *scanner) scanIdentifier(r rune) {
-	var text string
+func (s *scanner) scanIdentifier(initial rune) {
+	var builder strings.Builder
+	builder.WriteRune(initial)
 	for {
+		r, _, err := s.rdr.ReadRune()
+		if err != nil {
+			break
+		}
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			text += string(r)
+			builder.WriteRune(r)
 		} else {
 			s.rdr.UnreadRune()
 			break
 		}
-		r, _, _ = s.rdr.ReadRune()
 	}
-
+	text := builder.String()
 	if kw, ok := reservedWords[text]; ok {
 		s.sendToken(kw, text)
 	} else {
@@ -200,53 +209,56 @@ func (s *scanner) scanIdentifier(r rune) {
 	}
 }
 
-func (s *scanner) scanNumber(r rune) {
+func (s *scanner) scanNumber(initial rune) {
 	tokType := INTEGER_T
-	var text string
+	var builder strings.Builder
+	builder.WriteRune(initial)
 	for {
+		r, _, err := s.rdr.ReadRune()
+		if err != nil {
+			break
+		}
 		if r == '.' {
-			r2, _, _ := s.rdr.ReadRune()
-			if r2 == '.' {
-				s.sendToken(INTEGER_T, text)
+			nextRune, _, err := s.rdr.ReadRune()
+			if err == nil && nextRune == '.' {
+				s.sendToken(tokType, builder.String())
 				s.sendToken(DOTDOT_SYM, "..")
 				return
-			} else {
+			} else if err == nil {
 				s.rdr.UnreadRune()
 			}
 			tokType = FLOAT_T
-		}
-		if unicode.IsDigit(r) || r == '.' {
-			text += string(r)
+			builder.WriteRune(r)
+		} else if unicode.IsDigit(r) {
+			builder.WriteRune(r)
 		} else {
 			s.rdr.UnreadRune()
 			break
 		}
-		r, _, _ = s.rdr.ReadRune()
 	}
-	s.sendToken(tokType, text)
+	s.sendToken(tokType, builder.String())
 }
 
 func (s *scanner) scanSymbol(r rune) {
 	single := string(r)
-
-	r, _, _ = s.rdr.ReadRune()
-	double := single + string(r)
-	if t, ok := symbolMap[double]; ok {
-		s.sendToken(t, double)
-		return
-	}
-	if double == "//" {
-		s.rdr.ReadLine()
-		return
-	}
-	if double == "/*" {
-		s.scanMultiLineComment()
-		return
+	if peek, err := s.rdr.Peek(1); err == nil {
+		double := single + string(peek)
+		if t, ok := symbolMap[double]; ok {
+			s.rdr.ReadRune()
+			s.sendToken(t, double)
+			return
+		}
+		if double == "//" {
+			s.rdr.ReadString('\n')
+			return
+		}
+		if double == "/*" {
+			s.rdr.ReadRune()
+			s.scanMultiLineComment()
+			return
+		}
 	}
 	if t, ok := symbolMap[single]; ok {
-		s.rdr.UnreadRune()
 		s.sendToken(t, single)
-		return
 	}
-	s.rdr.UnreadRune()
 }
