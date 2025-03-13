@@ -8,270 +8,243 @@ import (
 	"unicode"
 )
 
-type TokenType string
+type TokKind string
 
-type Token struct {
-	Type  TokenType
-	Value string
+type Lexeme struct {
+	Kind TokKind
+	Text string
+}
+
+type scanner struct {
+	lexemes chan Lexeme
+	rdr     *bufio.Reader
 }
 
 const (
-	EOF       TokenType = "EOF"
-	LPARENT   TokenType = "("
-	RPARENT   TokenType = ")"
-	LCURLY    TokenType = "{"
-	RCURLY    TokenType = "}"
-	LBRACKET  TokenType = "["
-	RBRACKET  TokenType = "]"
-	COMMA     TokenType = ","
-	DOT       TokenType = "."
-	PLUS      TokenType = "+"
-	MINUS     TokenType = "-"
-	STAR      TokenType = "*"
-	SLASH     TokenType = "/"
-	COLON     TokenType = ":"
-	SEMICOLON TokenType = ";"
-	NOT       TokenType = "!"
-	QUESTION  TokenType = "?"
-	EQ        TokenType = "="
-	EQEQ      TokenType = "=="
-	NEQ       TokenType = "!="
-	GREATER   TokenType = ">"
-	LESSER    TokenType = "<"
-	GEQ       TokenType = ">="
-	LEQ       TokenType = "<="
-	STRING    TokenType = "STRING"
-	INT       TokenType = "INT"
-	FLOAT     TokenType = "FLOAT"
-	IDENT     TokenType = "IDENT"
-	TRUE      TokenType = "TRUE"
-	FALSE     TokenType = "FALSE"
-	IF        TokenType = "IF"
-	ELSE      TokenType = "ELSE"
-	FN        TokenType = "FN"
-	PRINT     TokenType = "PRINT"
-	PRINTLN   TokenType = "PRINTLN"
-	RETURN    TokenType = "RETURN"
-	FOR       TokenType = "FOR"
-	DOTDOT    TokenType = ".."
-	SWAP      TokenType = "SWAP"
-	INPUT     TokenType = "INPUT"
-	LEN       TokenType = "LEN"
-	IMPORT    TokenType = "IMPORT"
-	OR        TokenType = "OR"
-	AND       TokenType = "AND"
+	END_OF_FILE   TokKind = "EOF"
+	OPEN_PAREN    TokKind = "("
+	CLOSE_PAREN   TokKind = ")"
+	OPEN_CURLY    TokKind = "{"
+	CLOSE_CURLY   TokKind = "}"
+	OPEN_BRACKET  TokKind = "["
+	CLOSE_BRACKET TokKind = "]"
+	COMMA_SYM     TokKind = ","
+	DOT_SYM       TokKind = "."
+	PLUS_SYM      TokKind = "+"
+	MINUS_SYM     TokKind = "-"
+	MULTIPLY_SYM  TokKind = "*"
+	DIVIDE_SYM    TokKind = "/"
+	COLON_SYM     TokKind = ":"
+	SEMICOLON_SYM TokKind = ";"
+	EXCLAMATION   TokKind = "!"
+	QUESTION_MARK TokKind = "?"
+	ASSIGN        TokKind = "="
+	EQ_OP         TokKind = "=="
+	NEQ_OP        TokKind = "!="
+	GREATER_THAN  TokKind = ">"
+	LESS_THAN     TokKind = "<"
+	GREATER_EQ    TokKind = ">="
+	LESS_EQ       TokKind = "<="
+	STRING_T      TokKind = "STRING"
+	INTEGER_T     TokKind = "INT"
+	FLOAT_T       TokKind = "FLOAT"
+	IDENTIFIER    TokKind = "IDENT"
+	ERROR_T       TokKind = "ERROR"
+	TRUE_T        TokKind = "TRUE"
+	FALSE_T       TokKind = "FALSE"
+	IF_T          TokKind = "IF"
+	ELSE_T        TokKind = "ELSE"
+	FUNCTION_T    TokKind = "FN"
+	PRINT_T       TokKind = "PRINT"
+	PRINTLN_T     TokKind = "PRINTLN"
+	RETURN_T      TokKind = "RETURN"
+	FOR_T         TokKind = "FOR"
+	DOTDOT_SYM    TokKind = ".."
+	SWAP_T        TokKind = "SWAP"
+	INPUT_T       TokKind = "INPUT"
+	LENGTH_T      TokKind = "LEN"
+	IMPORT_T      TokKind = "IMPORT"
+	OR_T          TokKind = "OR"
+	AND_T         TokKind = "AND"
 )
 
-var keywords = map[string]TokenType{
-	"fn":      FN,
-	"print":   PRINT,
-	"println": PRINTLN,
-	"return":  RETURN,
-	"true":    TRUE,
-	"false":   FALSE,
-	"if":      IF,
-	"else":    ELSE,
-	"for":     FOR,
-	"swap":    SWAP,
-	"input":   INPUT,
-	"len":     LEN,
-	"import":  IMPORT,
-	"or":      OR,
-	"and":     AND,
+var reservedWords = map[string]TokKind{
+	"fn":      FUNCTION_T,
+	"print":   PRINT_T,
+	"println": PRINTLN_T,
+	"return":  RETURN_T,
+	"true":    TRUE_T,
+	"false":   FALSE_T,
+	"if":      IF_T,
+	"else":    ELSE_T,
+	"for":     FOR_T,
+	"swap":    SWAP_T,
+	"input":   INPUT_T,
+	"len":     LENGTH_T,
+	"import":  IMPORT_T,
+	"or":      OR_T,
+	"and":     AND_T,
 }
 
-var symbols = map[string]TokenType{
-	"(":  LPARENT,
-	")":  RPARENT,
-	"{":  LCURLY,
-	"}":  RCURLY,
-	"[":  LBRACKET,
-	"]":  RBRACKET,
-	",":  COMMA,
-	"..": DOTDOT,
-	".":  DOT,
-	"+":  PLUS,
-	"-":  MINUS,
-	"*":  STAR,
-	"/":  SLASH,
-	":":  COLON,
-	"!":  NOT,
-	"?":  QUESTION,
-	"=":  EQ,
-	"==": EQEQ,
-	"!=": NEQ,
-	">":  GREATER,
-	">=": GEQ,
-	"<":  LESSER,
-	"<=": LEQ,
+var symbolMap = map[string]TokKind{
+	"(":  OPEN_PAREN,
+	")":  CLOSE_PAREN,
+	"{":  OPEN_CURLY,
+	"}":  CLOSE_CURLY,
+	"[":  OPEN_BRACKET,
+	"]":  CLOSE_BRACKET,
+	",":  COMMA_SYM,
+	"..": DOTDOT_SYM,
+	".":  DOT_SYM,
+	"+":  PLUS_SYM,
+	"-":  MINUS_SYM,
+	"*":  MULTIPLY_SYM,
+	"/":  DIVIDE_SYM,
+	":":  COLON_SYM,
+	"!":  EXCLAMATION,
+	"?":  QUESTION_MARK,
+	"=":  ASSIGN,
+	"==": EQ_OP,
+	"!=": NEQ_OP,
+	">":  GREATER_THAN,
+	">=": GREATER_EQ,
+	"<":  LESS_THAN,
+	"<=": LESS_EQ,
 }
 
-type Lexer struct {
-	tokens chan Token
-	reader *bufio.Reader
-}
-
-func NewLexer(input string) *Lexer {
-	l := &Lexer{
-		tokens: make(chan Token),
-		reader: bufio.NewReader(strings.NewReader(input)),
+func CreateScanner(src string) *scanner {
+	rdr := bufio.NewReader(strings.NewReader(src))
+	s := &scanner{
+		rdr:     rdr,
+		lexemes: make(chan Lexeme),
 	}
-	go l.run()
-	return l
+	go s.scanTokens()
+	return s
 }
 
-func (l *Lexer) run() {
-	defer close(l.tokens)
-	for {
-		r, _, err := l.reader.ReadRune()
-		if err == io.EOF {
-			l.emit(EOF, "")
-			return
-		}
-		if unicode.IsSpace(r) {
-			continue
-		}
-		switch {
-		case r == '"':
-			l.lexString()
-		case unicode.IsDigit(r):
-			l.lexNumber(r)
-		case unicode.IsLetter(r):
-			l.lexIdentifier(r)
-		default:
-			l.lexSymbol(r)
-		}
+func (s *scanner) scanTokens() {
+	r, _, err := s.rdr.ReadRune()
+	if err == io.EOF {
+		s.sendToken(END_OF_FILE, "")
+		close(s.lexemes)
+		return
 	}
+	switch {
+	case r == '"':
+		s.scanString()
+	case unicode.IsDigit(r):
+		s.scanNumber(r)
+	case unicode.IsLetter(r):
+		s.scanIdentifier(r)
+	default:
+		s.scanSymbol(r)
+	}
+	s.scanTokens()
 }
 
-func (l *Lexer) emit(t TokenType, value string) {
-	l.tokens <- Token{Type: t, Value: value}
-}
-
-func (l *Lexer) lexString() {
-	var sb strings.Builder
+func (s *scanner) scanMultiLineComment() {
 	for {
-		r, _, err := l.reader.ReadRune()
+		str, err := s.rdr.ReadString('*')
+		_ = str
 		if err != nil {
-			log.Fatal("Unexpected EOF in string")
+			log.Fatal(err)
+			return
 		}
-		if r == '"' {
+		nextChar, _, err := s.rdr.ReadRune()
+		if err != nil {
+			log.Fatal(err)
+			return
+		}
+		if nextChar == '/' {
 			break
 		}
-		if r == '\\' {
-			next, _, err := l.reader.ReadRune()
-			if err != nil {
-				log.Fatal("Unexpected EOF in escape sequence")
-			}
-			if next == '"' {
-				sb.WriteRune('"')
-			} else {
-				sb.WriteRune('\\')
-				sb.WriteRune(next)
-			}
+		s.rdr.UnreadRune()
+	}
+}
+
+func (s *scanner) sendToken(kind TokKind, txt string) {
+	token := Lexeme{Kind: kind, Text: txt}
+	s.lexemes <- token
+}
+
+func (s *scanner) scanString() {
+	accumulated, _ := s.rdr.ReadString('"')
+	str := accumulated
+	for strings.HasSuffix(str, "\\\"") {
+		str, _ = s.rdr.ReadString('"')
+		accumulated += str
+	}
+	accumulated = strings.TrimRight(accumulated, `"`)
+	accumulated = strings.ReplaceAll(accumulated, "\\\"", "\"")
+	s.sendToken(STRING_T, accumulated)
+}
+
+func (s *scanner) scanIdentifier(r rune) {
+	var text string
+	for {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			text += string(r)
 		} else {
-			sb.WriteRune(r)
-		}
-	}
-	l.emit(STRING, sb.String())
-}
-
-func (l *Lexer) lexIdentifier(first rune) {
-	var sb strings.Builder
-	sb.WriteRune(first)
-	for {
-		r, _, err := l.reader.ReadRune()
-		if err != nil || !isIdentChar(r) {
-			if err != io.EOF {
-				l.reader.UnreadRune()
-			}
+			s.rdr.UnreadRune()
 			break
 		}
-		sb.WriteRune(r)
+		r, _, _ = s.rdr.ReadRune()
 	}
-	ident := sb.String()
-	if t, ok := keywords[ident]; ok {
-		l.emit(t, ident)
+
+	if kw, ok := reservedWords[text]; ok {
+		s.sendToken(kw, text)
 	} else {
-		l.emit(IDENT, ident)
+		s.sendToken(IDENTIFIER, text)
 	}
 }
 
-func isIdentChar(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r)
-}
-
-func (l *Lexer) lexNumber(first rune) {
-	var sb strings.Builder
-	sb.WriteRune(first)
-	t := INT
+func (s *scanner) scanNumber(r rune) {
+	tokType := INTEGER_T
+	var text string
 	for {
-		r, _, err := l.reader.ReadRune()
-		if err != nil || (!unicode.IsDigit(r) && r != '.') {
-			if err != io.EOF {
-				l.reader.UnreadRune()
-			}
-			break
-		}
 		if r == '.' {
-			if t == FLOAT {
-				l.reader.UnreadRune()
-				break
+			r2, _, _ := s.rdr.ReadRune()
+			if r2 == '.' {
+				s.sendToken(INTEGER_T, text)
+				s.sendToken(DOTDOT_SYM, "..")
+				return
+			} else {
+				s.rdr.UnreadRune()
 			}
-			t = FLOAT
+			tokType = FLOAT_T
 		}
-		sb.WriteRune(r)
+		if unicode.IsDigit(r) || r == '.' {
+			text += string(r)
+		} else {
+			s.rdr.UnreadRune()
+			break
+		}
+		r, _, _ = s.rdr.ReadRune()
 	}
-	l.emit(t, sb.String())
+	s.sendToken(tokType, text)
 }
 
-func (l *Lexer) lexSymbol(first rune) {
-	single := string(first)
-	if single == "/" {
-		if l.lexComment() {
-			return
-		}
-	}
-	double := single
-	if next, _, err := l.reader.ReadRune(); err == nil {
-		double += string(next)
-		if t, ok := symbols[double]; ok {
-			l.emit(t, double)
-			return
-		}
-		l.reader.UnreadRune()
-	}
-	if t, ok := symbols[single]; ok {
-		l.emit(t, single)
-	} else {
-		log.Fatalf("Unknown symbol: %s", single)
-	}
-}
+func (s *scanner) scanSymbol(r rune) {
+	single := string(r)
 
-func (l *Lexer) lexComment() bool {
-	next, _, err := l.reader.ReadRune()
-	if err != nil {
-		l.reader.UnreadRune()
-		return false
+	r, _, _ = s.rdr.ReadRune()
+	double := single + string(r)
+	if t, ok := symbolMap[double]; ok {
+		s.sendToken(t, double)
+		return
 	}
-	switch next {
-	case '/':
-		l.reader.ReadLine()
-		return true
-	case '*':
-		for {
-			r, _, err := l.reader.ReadRune()
-			if err != nil {
-				log.Fatal("Unclosed multi-line comment")
-			}
-			if r == '*' {
-				if next, _, err := l.reader.ReadRune(); err == nil && next == '/' {
-					return true
-				}
-				l.reader.UnreadRune()
-			}
-		}
+	if double == "//" {
+		s.rdr.ReadLine()
+		return
 	}
-	l.reader.UnreadRune()
-	return false
+	if double == "/*" {
+		s.scanMultiLineComment()
+		return
+	}
+	if t, ok := symbolMap[single]; ok {
+		s.rdr.UnreadRune()
+		s.sendToken(t, single)
+		return
+	}
+	s.rdr.UnreadRune()
 }

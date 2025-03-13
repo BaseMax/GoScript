@@ -1,21 +1,27 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
+	"strings"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		RunREPL()
+		fmt.Printf("Usage: %s <file>\n", os.Args[0])
 		return
 	}
-	data, err := os.ReadFile(os.Args[1])
-	if err != nil {
-		log.Fatalf("Failed to read file %s: %v", os.Args[1], err)
+
+	fileContent, fileErr := os.ReadFile(os.Args[1])
+	if fileErr != nil {
+		log.Fatal(fileErr)
 	}
-	lexer := NewLexer(string(data))
-	parser := NewParser(lexer.tokens)
-	scope := NewScope(nil)
-	Evaluate(parser.nodes, scope)
+	src := string(fileContent)
+	src = strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\r`, "\r").Replace(src)
+
+	scn := CreateScanner(src)
+	astParser := CreateParser(scn.lexemes)
+	env := CreateEnvironment(nil)
+	EvaluateNodes(astParser.astNodes, env)
 }

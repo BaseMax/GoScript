@@ -1,470 +1,542 @@
 package main
 
 import (
-	"log"
 	"strconv"
 )
 
 const (
-	LowestPriority int = iota + 1
-	Equals             // ==
-	LessGreater        // > or <
-	Sum                // +
-	Product            // *
-	Prefix             // -X or !X
-	Call               // myFunction(X)
-	Index              // array[index]
-	RangePriority      // 1..10
+	LOWEST_PREC = iota + 1
+	PREC_EQUALS
+	PREC_LESSGREATER
+	PREC_SUM
+	PREC_PRODUCT
+	PREC_PREFIX
+	PREC_CALL
+	PREC_INDEX
+	PREC_RANGE
 )
 
-var precedence = map[TokenType]int{
-	EQ:       Equals,
-	EQEQ:     Equals,
-	NEQ:      Equals,
-	LESSER:   LessGreater,
-	GREATER:  LessGreater,
-	LEQ:      LessGreater,
-	GEQ:      LessGreater,
-	PLUS:     Sum,
-	MINUS:    Sum,
-	SLASH:    Product,
-	STAR:     Product,
-	LPARENT:  Call,
-	LBRACKET: Index,
-	DOTDOT:   RangePriority,
+var precedences = map[TokKind]int{
+	ASSIGN:       PREC_EQUALS,
+	EQ_OP:        PREC_EQUALS,
+	NEQ_OP:       PREC_EQUALS,
+	LESS_THAN:    PREC_LESSGREATER,
+	GREATER_THAN: PREC_LESSGREATER,
+	LESS_EQ:      PREC_LESSGREATER,
+	GREATER_EQ:   PREC_LESSGREATER,
+	PLUS_SYM:     PREC_SUM,
+	MINUS_SYM:    PREC_SUM,
+	DIVIDE_SYM:   PREC_PRODUCT,
+	MULTIPLY_SYM: PREC_PRODUCT,
+	OPEN_PAREN:   PREC_CALL,
+	OPEN_BRACKET: PREC_INDEX,
+	DOTDOT_SYM:   PREC_RANGE,
 }
 
 type Node interface {
-	Eval(scope *Scope) any
+	Evaluate(env *Environment) any
 }
 
-type Parser struct {
-	tokens          chan Token
-	currentToken    Token
-	peekToken       Token
-	nodes           chan Node
-	prefixParselets map[TokenType]func() Node
-	infixParselets  map[TokenType]func(Node) Node
+type prefixParseFunc func() Node
+
+type infixParseFunc func(Node) Node
+
+type ArrayLiteral struct {
+	Elements []Node
 }
 
-func NewParser(tokens chan Token) *Parser {
-	p := &Parser{
-		tokens:          tokens,
-		nodes:           make(chan Node),
-		prefixParselets: make(map[TokenType]func() Node),
-		infixParselets:  make(map[TokenType]func(Node) Node),
-	}
-	p.registerParselets()
-	p.currentToken = <-tokens
-	p.peekToken = <-tokens
-	go p.parse()
-	return p
+type StringLiteral struct {
+	Value string
 }
 
-func (p *Parser) registerParselets() {
-	p.prefixParselets = map[TokenType]func() Node{
-		IDENT:    p.parseIdentifier,
-		STRING:   p.parseString,
-		INT:      p.parseInt,
-		FLOAT:    p.parseFloat,
-		MINUS:    p.parseUnaryOp,
-		NOT:      p.parseUnaryOp,
-		TRUE:     p.parseBool,
-		FALSE:    p.parseBool,
-		LPARENT:  p.parseGrouped,
-		IF:       p.parseIf,
-		FN:       p.parseFunction,
-		PRINT:    p.parsePrint,
-		PRINTLN:  p.parsePrint,
-		LBRACKET: p.parseArray,
-		LCURLY:   p.parseMap,
-		FOR:      p.parseFor,
-		RETURN:   p.parseReturn,
-		SWAP:     p.parseSwap,
-		INPUT:    p.parseInput,
-		LEN:      p.parseLen,
-		IMPORT:   p.parseImport,
-	}
-	for _, t := range []TokenType{OR, AND, PLUS, MINUS, STAR, SLASH, EQEQ, NEQ, GREATER, GEQ, LESSER, LEQ} {
-		p.infixParselets[t] = p.parseBinaryOp
-	}
-	p.infixParselets[LPARENT] = p.parseFunctionCall
-	p.infixParselets[LBRACKET] = p.parseArrayIndex
-	p.infixParselets[DOTDOT] = p.parseRange
-	p.infixParselets[EQ] = p.parseVariable
+type Ident struct {
+	Lexeme Lexeme
+	IsFunc bool
 }
 
-func (p *Parser) parse() {
-	defer close(p.nodes)
-	for p.currentToken.Type != EOF {
-		if node := p.parseExpression(LowestPriority); node != nil {
-			p.nodes <- node
-		}
-		p.advance()
-	}
+type IntegerLiteral struct {
+	Lexeme Lexeme
+	Value  int
 }
 
-func (p *Parser) advance() {
-	p.currentToken = p.peekToken
-	p.peekToken = <-p.tokens
+type FloatLiteral struct {
+	Lexeme Lexeme
+	Value  float64
+}
+type BooleanLiteral struct {
+	Lexeme Lexeme
+	Value  bool
 }
 
-func (p *Parser) expect(t TokenType) {
-	if p.currentToken.Type != t {
-		log.Fatalf("Expected %s, got %s", t, p.currentToken.Type)
-	}
-	p.advance()
+type ReturnStmt struct {
+	Expr Node
 }
-
-func (p *Parser) peekPrecedence() int {
-	if p, ok := precedence[p.peekToken.Type]; ok {
-		return p
-	}
-	return LowestPriority
-}
-
-func (p *Parser) parseExpression(precedence int) Node {
-	prefix, ok := p.prefixParselets[p.currentToken.Type]
-	if !ok {
-		return nil
-	}
-	left := prefix()
-	for p.peekPrecedence() > precedence {
-		infix, ok := p.infixParselets[p.peekToken.Type]
-		if !ok {
-			break
-		}
-		p.advance()
-		left = infix(left)
-	}
-	return left
-}
-
-type StringNode struct{ Value string }
-
-func (p *Parser) parseString() Node {
-	s := StringNode{Value: p.currentToken.Value}
-	p.advance()
-	return &s
-}
-
-type IdentifierNode struct{ Name string }
-
-func (p *Parser) parseIdentifier() Node {
-	id := IdentifierNode{Name: p.currentToken.Value}
-	p.advance()
-	return &id
-}
-
-type IntNode struct{ Value int }
-
-func (p *Parser) parseInt() Node {
-	v, err := strconv.Atoi(p.currentToken.Value)
-	if err != nil {
-		log.Fatalf("Invalid integer: %s", p.currentToken.Value)
-	}
-	n := IntNode{Value: v}
-	p.advance()
-	return &n
-}
-
-type FloatNode struct{ Value float64 }
-
-func (p *Parser) parseFloat() Node {
-	v, err := strconv.ParseFloat(p.currentToken.Value, 64)
-	if err != nil {
-		log.Fatalf("Invalid float: %s", p.currentToken.Value)
-	}
-	n := FloatNode{Value: v}
-	p.advance()
-	return &n
-}
-
-type BoolNode struct{ Value bool }
-
-func (p *Parser) parseBool() Node {
-	v, err := strconv.ParseBool(p.currentToken.Value)
-	if err != nil {
-		log.Fatalf("Invalid boolean: %s", p.currentToken.Value)
-	}
-	n := BoolNode{Value: v}
-	p.advance()
-	return &n
-}
-
-type ReturnNode struct{ Value Node }
-
-func (p *Parser) parseReturn() Node {
-	p.advance()
-	return &ReturnNode{Value: p.parseExpression(LowestPriority)}
-}
-
-type VariableNode struct {
+type VarAssign struct {
 	Name  Node
 	Value Node
 }
-
-func (p *Parser) parseVariable(left Node) Node {
-	p.advance()
-	return &VariableNode{Name: left, Value: p.parseExpression(LowestPriority)}
+type PrefixOp struct {
+	Lexeme Lexeme
+	Expr   Node
 }
 
-type UnaryOpNode struct {
-	Op    string
-	Right Node
+type InfixOp struct {
+	Lexeme Lexeme
+	Left   Node
+	Right  Node
 }
 
-func (p *Parser) parseUnaryOp() Node {
-	op := p.currentToken.Value
-	p.advance()
-	return &UnaryOpNode{Op: op, Right: p.parseExpression(Prefix)}
+type BlockStmt struct {
+	Stmts []Node
 }
 
-type BinaryOpNode struct {
-	Op    string
-	Left  Node
-	Right Node
-}
-
-func (p *Parser) parseBinaryOp(left Node) Node {
-	op := p.currentToken.Value
-	priority := precedence[p.currentToken.Type]
-	p.advance()
-	return &BinaryOpNode{Op: op, Left: left, Right: p.parseExpression(priority)}
-}
-
-type BlockNode struct{ Statements []Node }
-
-func (p *Parser) parseBlock() *BlockNode {
-	p.expect(LCURLY)
-	block := &BlockNode{}
-	for p.currentToken.Type != RCURLY && p.currentToken.Type != EOF {
-		if stmt := p.parseExpression(LowestPriority); stmt != nil {
-			block.Statements = append(block.Statements, stmt)
-		}
-		p.advance()
-	}
-	p.expect(RCURLY)
-	return block
-}
-
-type IfNode struct {
+type IfStmt struct {
 	Condition Node
-	True      *BlockNode
-	Else      *BlockNode
+	Then      *BlockStmt
+	Else      *BlockStmt
 }
 
-func (p *Parser) parseIf() Node {
-	p.advance()
-	condition := p.parseExpression(LowestPriority)
-	p.advance()
-	trueBlock := p.parseBlock()
-	var elseBlock *BlockNode
-	if p.currentToken.Type == ELSE {
-		p.advance()
-		elseBlock = p.parseBlock()
-	}
-	return &IfNode{Condition: condition, True: trueBlock, Else: elseBlock}
+type ForStmt struct {
+	Key    *Ident
+	Value  *Ident
+	Target Node
+	Body   *BlockStmt
 }
 
-type ForNode struct {
-	Key     *IdentifierNode
-	Value   *IdentifierNode
-	Subject Node
-	Body    *BlockNode
-}
-
-func (p *Parser) parseFor() Node {
-	p.advance()
-	key := p.parseIdentifier().(*IdentifierNode)
-	var value *IdentifierNode
-	if p.currentToken.Type == COMMA {
-		p.advance()
-		value = p.parseIdentifier().(*IdentifierNode)
-	}
-	p.expect(FOR)
-	p.advance()
-	subject := p.parseExpression(LowestPriority)
-	p.advance()
-	body := p.parseBlock()
-	return &ForNode{Key: key, Value: value, Subject: subject, Body: body}
-}
-
-type RangeNode struct {
+type RangeExpr struct {
 	From Node
 	To   Node
 	Step Node
 }
 
-func (p *Parser) parseRange(left Node) Node {
-	p.advance()
-	to := p.parseExpression(LowestPriority)
-	var step Node
-	if p.currentToken.Type == COLON {
-		p.advance()
-		step = p.parseExpression(LowestPriority)
-	}
-	return &RangeNode{From: left, To: to, Step: step}
-}
-
-type PrintNode struct {
+type PrintStmt struct {
 	Args    []Node
-	Newline bool
+	NewLine bool
 }
 
-func (p *Parser) parsePrint() Node {
-	newline := p.currentToken.Type == PRINTLN
-	p.advance()
-	p.expect(LPARENT)
-	args := p.parseArgs(RPARENT)
-	return &PrintNode{Args: args, Newline: newline}
+type IndexExpr struct {
+	Collection Node
+	Index      Node
 }
 
-type ArrayNode struct{ Elements []Node }
-
-func (p *Parser) parseArray() Node {
-	p.advance()
-	elements := p.parseArgs(RBRACKET)
-	return &ArrayNode{Elements: elements}
+type MapLiteral struct {
+	Pairs map[Node]Node
 }
 
-type MapNode struct{ Pairs map[Node]Node }
-
-func (p *Parser) parseMap() Node {
-	p.advance()
-	pairs := make(map[Node]Node)
-	for p.currentToken.Type != RCURLY {
-		key := p.parseExpression(LowestPriority)
-		p.expect(COLON)
-		p.advance()
-		value := p.parseExpression(LowestPriority)
-		pairs[key] = value
-		if p.currentToken.Type == COMMA {
-			p.advance()
-		}
-	}
-	p.advance()
-	return &MapNode{Pairs: pairs}
-}
-
-type IndexNode struct {
-	Subject Node
-	Index   Node
-}
-
-func (p *Parser) parseArrayIndex(left Node) Node {
-	p.advance()
-	index := p.parseExpression(LowestPriority)
-	p.expect(RBRACKET)
-	return &IndexNode{Subject: left, Index: index}
-}
-
-type FunctionNode struct {
+type FunctionLiteral struct {
 	Name   string
-	Params []*IdentifierNode
-	Body   *BlockNode
-	Scope  *Scope
+	Params []*Ident
+	Body   *BlockStmt
+	Env    *Environment
 }
 
-func (p *Parser) parseFunction() Node {
-	p.advance()
-	name := p.currentToken.Value
-	p.advance()
-	p.expect(LPARENT)
-	params := p.parseParams()
-	p.advance()
-	body := p.parseBlock()
-	return &FunctionNode{Name: name, Params: params, Body: body}
-}
-
-type CallNode struct {
+type CallExpr struct {
 	Function Node
 	Args     []Node
 }
 
-func (p *Parser) parseFunctionCall(left Node) Node {
-	p.advance()
-	args := p.parseArgs(RPARENT)
-	return &CallNode{Function: left, Args: args}
+type SwapStmt struct {
+	A Node
+	B Node
 }
 
-type SwapNode struct {
-	Left  Node
-	Right Node
+type ImportStmt struct {
+	File Node
 }
 
-func (p *Parser) parseSwap() Node {
-	p.advance()
-	p.expect(LPARENT)
-	left := p.parseExpression(LowestPriority)
-	p.expect(COMMA)
-	p.advance()
-	right := p.parseExpression(LowestPriority)
-	p.expect(RPARENT)
-	return &SwapNode{Left: left, Right: right}
+type InputStmt struct {
+	Prompt Node
 }
 
-type ImportNode struct{ Filename Node }
-
-func (p *Parser) parseImport() Node {
-	p.advance()
-	p.expect(LPARENT)
-	filename := p.parseExpression(LowestPriority)
-	p.expect(RPARENT)
-	return &ImportNode{Filename: filename}
+type LengthExpr struct {
+	Target Node
 }
 
-type InputNode struct{ Prompt Node }
-
-func (p *Parser) parseInput() Node {
-	p.advance()
-	p.expect(LPARENT)
-	prompt := p.parseExpression(LowestPriority)
-	p.expect(RPARENT)
-	return &InputNode{Prompt: prompt}
+type analyzer struct {
+	astNodes      chan Node
+	lexemes       chan Lexeme
+	curLex        *Lexeme
+	nxtLex        *Lexeme
+	prefixParsers map[TokKind]prefixParseFunc
+	infixParsers  map[TokKind]infixParseFunc
 }
 
-type LenNode struct{ Subject Node }
-
-func (p *Parser) parseLen() Node {
-	p.advance()
-	p.expect(LPARENT)
-	subject := p.parseExpression(LowestPriority)
-	p.expect(RPARENT)
-	return &LenNode{Subject: subject}
-}
-
-func (p *Parser) parseArgs(end TokenType) []Node {
-	var args []Node
-	for p.currentToken.Type != end {
-		if len(args) > 0 {
-			p.expect(COMMA)
-		}
-		p.advance()
-		args = append(args, p.parseExpression(LowestPriority))
+func CreateParser(lexemes chan Lexeme) *analyzer {
+	a := &analyzer{
+		lexemes:      lexemes,
+		infixParsers: make(map[TokKind]infixParseFunc),
+		astNodes:     make(chan Node),
+		curLex:       &Lexeme{},
+		nxtLex:       &Lexeme{},
 	}
-	p.advance()
+
+	a.prefixParsers = map[TokKind]prefixParseFunc{
+		IDENTIFIER:   a.parseIdent,
+		STRING_T:     a.parseStr,
+		INTEGER_T:    a.parseInteger,
+		FLOAT_T:      a.parseFloating,
+		MINUS_SYM:    a.parsePrefixOperator,
+		EXCLAMATION:  a.parsePrefixOperator,
+		TRUE_T:       a.parseBool,
+		FALSE_T:      a.parseBool,
+		OPEN_PAREN:   a.parseGroup,
+		IF_T:         a.parseIf,
+		FUNCTION_T:   a.parseFunction,
+		PRINT_T:      a.parsePrint,
+		PRINTLN_T:    a.parsePrint,
+		OPEN_BRACKET: a.parseArray,
+		OPEN_CURLY:   a.parseMap,
+		FOR_T:        a.parseFor,
+		RETURN_T:     a.parseRet,
+		SWAP_T:       a.parseSwap,
+		INPUT_T:      a.parseInput,
+		LENGTH_T:     a.parseLen,
+		IMPORT_T:     a.parseImport,
+	}
+
+	for _, kind := range []TokKind{OR_T, AND_T, PLUS_SYM, MINUS_SYM, MULTIPLY_SYM, DIVIDE_SYM, EQ_OP, NEQ_OP, GREATER_THAN, GREATER_EQ, LESS_THAN, LESS_EQ} {
+		a.infixParsers[kind] = a.parseInfixOperator
+	}
+
+	a.infixParsers[OPEN_PAREN] = a.parseCall
+	a.infixParsers[OPEN_BRACKET] = a.parseIndex
+	a.infixParsers[DOTDOT_SYM] = a.parseRange
+	a.infixParsers[ASSIGN] = a.parseVarAssign
+
+	*a.curLex = <-a.lexemes
+	*a.nxtLex = <-a.lexemes
+
+	go a.processParsing()
+
+	return a
+}
+
+func (a *analyzer) getPrecedence(kind TokKind) int {
+	if prec, ok := precedences[kind]; ok {
+		return prec
+	}
+	return LOWEST_PREC
+}
+
+func (a *analyzer) checkNext(expected TokKind) bool {
+	if a.nxtLex.Kind == expected {
+		a.advance()
+		return true
+	}
+	return false
+}
+
+func (a *analyzer) advance() {
+	a.curLex = a.nxtLex
+	next, ok := <-a.lexemes
+	if !ok {
+		a.nxtLex = &Lexeme{Kind: END_OF_FILE, Text: ""}
+	} else {
+		a.nxtLex = &next
+	}
+}
+
+func (a *analyzer) processParsing() {
+	for a.curLex.Kind != END_OF_FILE {
+		node := a.parseExpr(LOWEST_PREC)
+		if node != nil {
+			a.astNodes <- node
+		}
+		a.advance()
+	}
+	close(a.astNodes)
+}
+
+func (a *analyzer) parseExpr(prec int) Node {
+	var left Node
+	if prefix, ok := a.prefixParsers[a.curLex.Kind]; ok {
+		left = prefix()
+	}
+	nextPrec := a.getPrecedence(a.nxtLex.Kind)
+	for nextPrec > prec {
+		infix, ok := a.infixParsers[a.nxtLex.Kind]
+		if !ok {
+			return left
+		}
+		a.advance()
+		left = infix(left)
+		nextPrec = a.getPrecedence(a.nxtLex.Kind)
+	}
+	return left
+}
+
+func (a *analyzer) parseStr() Node {
+	return StringLiteral{Value: a.curLex.Text}
+}
+
+func (a *analyzer) parseIdent() Node {
+	return Ident{Lexeme: *a.curLex, IsFunc: a.nxtLex.Kind == OPEN_PAREN}
+}
+func (a *analyzer) parseInteger() Node {
+	v, _ := strconv.Atoi(a.curLex.Text)
+	return IntegerLiteral{
+		Lexeme: *a.curLex,
+		Value:  v,
+	}
+}
+
+func (a *analyzer) parseFloating() Node {
+	v, _ := strconv.ParseFloat(a.curLex.Text, 64)
+	return FloatLiteral{
+		Lexeme: *a.curLex,
+		Value:  v,
+	}
+}
+
+func (a *analyzer) parseBool() Node {
+	b, _ := strconv.ParseBool(a.curLex.Text)
+	return BooleanLiteral{
+		Lexeme: *a.curLex,
+		Value:  b,
+	}
+}
+
+func (a *analyzer) parseRet() Node {
+	a.advance()
+	return ReturnStmt{
+		Expr: a.parseExpr(LOWEST_PREC),
+	}
+}
+
+func (a *analyzer) parseVarAssign(left Node) Node {
+	a.advance()
+	assign := VarAssign{
+		Name: left,
+	}
+	assign.Value = a.parseExpr(LOWEST_PREC)
+	return assign
+}
+
+func (a *analyzer) parseGroup() Node {
+	a.advance()
+	exp := a.parseExpr(LOWEST_PREC)
+	a.advance()
+	return exp
+}
+
+func (a *analyzer) parsePrefixOperator() Node {
+	op := PrefixOp{
+		Lexeme: *a.curLex,
+	}
+	a.advance()
+	op.Expr = a.parseExpr(PREC_PREFIX)
+	return op
+}
+
+func (a *analyzer) parseInfixOperator(left Node) Node {
+	op := InfixOp{
+		Lexeme: *a.curLex,
+		Left:   left,
+	}
+	prec := a.getPrecedence(a.curLex.Kind)
+	a.advance()
+	op.Right = a.parseExpr(prec)
+	return op
+}
+
+func (a *analyzer) parseBlock() *BlockStmt {
+	block := &BlockStmt{
+		Stmts: []Node{},
+	}
+	for a.nxtLex.Kind != CLOSE_CURLY {
+		a.advance()
+		exp := a.parseExpr(LOWEST_PREC)
+		block.Stmts = append(block.Stmts, exp)
+	}
+	a.advance()
+	return block
+}
+
+func (a *analyzer) parseIf() Node {
+	a.advance()
+	cond := a.parseExpr(LOWEST_PREC)
+	ifStmt := IfStmt{
+		Condition: cond,
+	}
+	a.advance()
+	ifStmt.Then = a.parseBlock()
+	if !a.checkNext(ELSE_T) {
+		return ifStmt
+	}
+	a.advance()
+	ifStmt.Else = a.parseBlock()
+	return ifStmt
+}
+
+func (a *analyzer) parseFor() Node {
+	a.advance()
+	keyIdent := a.parseIdent().(Ident)
+	forStmt := ForStmt{
+		Key: &keyIdent,
+	}
+	if a.checkNext(COMMA_SYM) {
+		a.advance()
+		valIdent := a.parseIdent().(Ident)
+		forStmt.Value = &valIdent
+	}
+	a.advance()
+	a.advance()
+	forStmt.Target = a.parseExpr(LOWEST_PREC)
+	a.advance()
+	forStmt.Body = a.parseBlock()
+	return forStmt
+}
+
+func (a *analyzer) parseRange(left Node) Node {
+	rnge := RangeExpr{
+		From: left,
+	}
+	a.advance()
+	rnge.To = a.parseExpr(LOWEST_PREC)
+	if a.checkNext(COLON_SYM) {
+		a.advance()
+		rnge.Step = a.parseExpr(LOWEST_PREC)
+	}
+	return rnge
+}
+
+func (a *analyzer) parsePrint() Node {
+	ps := PrintStmt{
+		Args:    []Node{},
+		NewLine: a.curLex.Kind == PRINTLN_T,
+	}
+	a.advance()
+	ps.Args = a.parseArgList()
+	return ps
+}
+
+func (a *analyzer) parseArgList() []Node {
+	args := []Node{}
+	for a.nxtLex.Kind != CLOSE_PAREN {
+		a.advance()
+		if a.curLex.Kind == COMMA_SYM {
+			a.advance()
+		}
+		args = append(args, a.parseExpr(LOWEST_PREC))
+	}
+	a.advance()
 	return args
 }
 
-func (p *Parser) parseParams() []*IdentifierNode {
-	var params []*IdentifierNode
-	for p.currentToken.Type != RPARENT {
-		if len(params) > 0 {
-			p.expect(COMMA)
-		}
-		p.advance()
-		if p.currentToken.Type != IDENT {
-			log.Fatalf("Expected identifier, got %s", p.currentToken.Type)
-		}
-		params = append(params, &IdentifierNode{Name: p.currentToken.Value})
+func (a *analyzer) parseArray() Node {
+	a.advance()
+	arr := ArrayLiteral{
+		Elements: make([]Node, 0),
 	}
+	for a.curLex.Kind != CLOSE_BRACKET {
+		arr.Elements = append(arr.Elements, a.parseExpr(LOWEST_PREC))
+		a.advance()
+		if a.curLex.Kind == COMMA_SYM {
+			a.advance()
+		}
+	}
+	return arr
+}
+
+func (a *analyzer) parseIndex(left Node) Node {
+	a.advance()
+	idx := IndexExpr{
+		Collection: left,
+		Index:      a.parseExpr(LOWEST_PREC),
+	}
+	a.advance()
+	return idx
+}
+
+func (a *analyzer) parseMap() Node {
+	a.advance()
+	m := MapLiteral{Pairs: map[Node]Node{}}
+	for {
+		key := a.parseExpr(LOWEST_PREC)
+		a.advance()
+		a.advance()
+		val := a.parseExpr(LOWEST_PREC)
+		m.Pairs[key] = val
+
+		if a.nxtLex.Kind == COMMA_SYM {
+			a.advance()
+			a.advance()
+		}
+
+		if a.nxtLex.Kind == CLOSE_CURLY {
+			a.advance()
+			break
+		}
+	}
+	return m
+}
+
+func (a *analyzer) parseFunction() Node {
+	a.advance()
+	fn := FunctionLiteral{Name: a.curLex.Text}
+	a.advance()
+	fn.Params = a.parseParamList()
+	fn.Body = a.parseBlock()
+	return fn
+}
+
+func (a *analyzer) parseParamList() []*Ident {
+	params := []*Ident{}
+	for a.nxtLex.Kind != CLOSE_PAREN {
+		a.advance()
+		if a.curLex.Kind == COMMA_SYM {
+			a.advance()
+		}
+		params = append(params, &Ident{Lexeme: *a.curLex})
+	}
+	a.advance()
+	a.advance()
 	return params
 }
 
-func (p *Parser) parseGrouped() Node {
-	p.advance()
-	expr := p.parseExpression(LowestPriority)
-	p.expect(RPARENT)
-	return expr
+func (a *analyzer) parseCall(function Node) Node {
+	return CallExpr{
+		Function: function,
+		Args:     a.parseArgList(),
+	}
+}
+
+func (a *analyzer) parseSwap() Node {
+	a.advance()
+	a.advance()
+	swap := SwapStmt{
+		A: a.parseExpr(LOWEST_PREC),
+	}
+	a.advance()
+	a.advance()
+	swap.B = a.parseExpr(LOWEST_PREC)
+	return swap
+}
+
+func (a *analyzer) parseImport() Node {
+	a.advance()
+	a.advance()
+	imp := ImportStmt{
+		File: a.parseExpr(LOWEST_PREC),
+	}
+	a.advance()
+	return imp
+}
+
+func (a *analyzer) parseInput() Node {
+	a.advance()
+	a.advance()
+	inp := InputStmt{
+		Prompt: a.parseExpr(LOWEST_PREC),
+	}
+	a.advance()
+	return inp
+}
+
+func (a *analyzer) parseLen() Node {
+	a.advance()
+	a.advance()
+	ln := LengthExpr{Target: a.parseExpr(LOWEST_PREC)}
+	a.advance()
+	return ln
 }
