@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 )
 
 func main() {
@@ -18,7 +17,6 @@ func main() {
 		log.Fatal(fileErr)
 	}
 	src := string(fileContent)
-	src = strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\r`, "\r").Replace(src)
 
 	scn := CreateScanner(src)
 	astParser := CreateParser(scn.lexemes)

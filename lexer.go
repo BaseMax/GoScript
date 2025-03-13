@@ -113,6 +113,8 @@ var symbolMap = map[string]TokKind{
 }
 
 func CreateScanner(src string) *scanner {
+	src = strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\r`, "\r").Replace(src)
+
 	rdr := bufio.NewReader(strings.NewReader(src))
 	s := &scanner{
 		rdr:     rdr,
