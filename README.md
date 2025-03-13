@@ -11,11 +11,30 @@ GoScript is a lightweight scripting language implemented in Go. It provides a si
 - **Modular Design:** Easily extend or integrate new features thanks to the well-organized code structure.
 - **Cross-Platform:** Built in Go, GoScript can run on any platform that supports Go.
 
+## Syntax
+
+**Hello World:**
+
+```
+print("Hey World!")
+```
+
+**Fibonacci:**
+
+```
+fn f(n) {
+    if n <= 1 { 1 }
+    n * f(n-1)
+}
+
+println(f(5))
+```
+
 ## Getting Started
 
 ### Prerequisites
 
-- [Go](https://golang.org/dl/) 1.XX or later
+- [Go](https://golang.org/dl/) Tested on 1.22.4
 
 ### Installation
 
@@ -65,7 +84,7 @@ GoScript/
 ├── goscript.exe         # Compiled executable (Windows)
 ├── lexer.go             # Lexer: Tokenizes the source code
 ├── LICENSE              # MIT License file
-├── main.go              # Entry point of the interpreter
+├── goscript.go          # Entry point of the interpreter
 └── parser.go            # Parser: Builds the AST from tokens
 ```
 
@@ -85,4 +104,4 @@ This project is licensed under the MIT License. See the LICENSE file for details
 
 ## Copyright
 
-© 2025 Max Base
+© 2025 Max Base (Seyyed Ali Mohammadiyeh)
